@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 import argparse
 from datetime import date, datetime, timedelta
-from pprint import pprint
 
 import requests
 from lxml import html
