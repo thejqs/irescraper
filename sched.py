@@ -1,7 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import argparse
 from datetime import date, datetime, timedelta
+from pprint import pprint
 
 import requests
 from lxml import html
@@ -21,18 +22,18 @@ class Conference:
         '''
         Try to guess the URL based on how IRE has done it in the past.
         '''
-        self.url = 'http://ire.org/conferences/{0}-{1}/schedule/'.format(self.conf.lower(), self.year)
+        self.url = 'http://ire.org/events-and-training/conferences/{0}-{1}/schedule/'.format(self.conf.lower(), self.year)
         headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
         r=requests.get(self.url, headers=headers)
         if not r.ok:
-            self.url = 'http://ire.org/conferences/{0}{1}/schedule/'.format(self.conf.lower(), self.year)
+            self.url = 'http://ire.org/events-and-training/conferences/{0}{1}/schedule/'.format(self.conf.lower(), self.year)
             s = requests.get(self.url, headers=headers)
             if not s.ok:
-                self.url = 'http://ire.org/conferences/{0}{1}/schedule/'.format(self.conf.lower(), str(self.year)[-2:])
+                self.url = 'http://ire.org/events-and-training/conferences/{0}{1}/schedule/'.format(self.conf.lower(), str(self.year)[-2:])
                 print(self.url)
                 t = requests.get(self.url, headers=headers)
                 if not t.ok:
-                    print "Unable to guess URL. Please specify a URL to scrape with the -u flag."
+                    print("Unable to g)uess URL. Please specify a URL to scrape with the -u flag.")
                     exit()
                 else:
                     self.url_content = t.content
@@ -64,6 +65,7 @@ class Conference:
             conf_date = datetime.strptime(date_string, "%a., %b. %d")
             first_day = date(self.year, conf_date.month, conf_date.day)
         self.conf_date = first_day
+        # print(self.conf_date)
         return self.conf_date
 
     def scrape(self):
@@ -77,62 +79,62 @@ class Conference:
             headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
             r = requests.get(self.url, headers=headers)
             if not r.ok:
-                print "Invalid URL. Please specify a valid URL to scrape with the -u flag."
+                print("Invalid URL. Please specify a valid URL to scrape with the -u flag.")
                 exit()
             else:
                 conf_html = r.content
         #cheat to drop pesky curly apostrophes
-        conf_html = conf_html.replace('&rsquo;', "'")
+        conf_html = conf_html.replace(b'&rsquo;', b"'")
         tree = html.fromstring(conf_html)
 
-        first_day = tree.xpath('body/div/div[2]/section/section[2]/article/div/ul/li/a')[0].text
-        self.dateify(first_day)
-        
-        days = tree.find_class('listview pane')
-        datediff = timedelta(days=1)
-        date = self.conf_date
+        days_elems = tree.find_class('col-xs-3')
+        days = [day.xpath('a/text()')[0] for day in days_elems]
+        dates = [self.dateify(day) for day in days]
+        self.day_counter = len(days)
 
-        day_counter = 0
+        skeds = {d: {'schedule_obj': s} for d, s in zip(dates, tree.find_class('schedule-list'))}
 
-        for day in days:
-            sessions = day.xpath('li')
+        # print(skeds)
+        for d, sked in skeds.items():
+            skeds[d]['session_objs'] = sked['schedule_obj'].xpath('li')
+            skeds[d]['sessions'] = []
 
-            for session in sessions:
+            for session in skeds[d]['session_objs']:
                 item = Session()
                 anchor = session.xpath('div/h3/a')[0]
                 item.name = anchor.text
                 item.url = 'http://ire.org'+ anchor.values()[0]
                 item.topic = item.tagging(item.name)
-                item.session_date = date
-                space_time = session.find_class('col-15 meta')[0]
-                item.place = space_time.xpath('p')[0].text
-                times = space_time.xpath('p')[1].text
+                item.session_date = d
+                space_time = session.find_class('item-meta event-meta')[0]
+                item.place = space_time.xpath('h4')[0].text.strip()
+                times = space_time.xpath('p')[0].text.strip()
                 start_time = times.split('-')[0].strip()
-                if len(start_time.split()[0])<=2:
+
+                if len(start_time.split()[0]) <= 2:
                     item.start_time = start_time.split()[0]+":00 " + start_time.split()[1]
                 else:
                     item.start_time = start_time
                 end_time = times.split('-')[1].strip()
-                if len(end_time.split()[0])<=2:
-                    item.end_time = end_time.split()[0]+":00 " + end_time.split()[1]
+                if len(end_time.split()[0]) <= 2:
+                    item.end_time = end_time.split()[0] + ":00 " + end_time.split()[1]
                 else:
                     item.end_time = end_time
-                item.speaker = session.xpath('div/p')[0].text_content().split(':')[1].strip()
-                desc_chunk = session.find_class('col-60 body2 gray-45')[0].xpath('p')
-                if len(desc_chunk)>2:
-                    new_desc = ''
-                    for p in desc_chunk[2:]:
-                        new_desc = new_desc + p.text_content() + '\n'
+
+                if session.find_class('event-speakers'):
+                    speakers = session.find_class('event-speakers')[0].text_content().strip()
+                    first_split = speakers.split(':')
+                    second_split = first_split[1].split(';')
+                    item.speaker = ', '.join([s.split(' of ')[0].strip() for s in second_split])
                 else:
-                    new_desc = ''
+                    item.speaker = ''
 
+                desc_chunk = [t.text.strip() for t in session.xpath('div[2]/p') if t.text is not None and t.text.strip()]
+
+                new_desc = ' '.join(desc_chunk)
                 item.desc = new_desc
-                
-                self.add(item)
 
-            date += datediff
-            day_counter+=1
-        self.day_counter = day_counter
+                self.add(item)
 
     def write(self, gcal=None):
         '''
@@ -198,7 +200,7 @@ class Session:
             if any(word in name_lower for word in topic["terms"]):
                 matched_topics.append(topic["tag"])
 
-        if matched_topics > 0:
+        if len(matched_topics) > 0:
             output = ", ".join(matched_topics)
             self.tags = output
             return self.tags
@@ -223,12 +225,12 @@ def main():
     if args.url:
         conf.update_url(args.url)
     else:
-        print "Sussing out the URL"
+        print("Sussing out the URL")
         conf.sniff_url()
 
-    print "Requesting {0}".format(conf.url)
+    print("Requesting {0}".format(conf.url))
 
-    print "Scraping {0} schedule...".format(conf.conf.upper())
+    print("Scraping {0} schedule...".format(conf.conf.upper()))
 
     conf.scrape()
 
@@ -237,11 +239,11 @@ def main():
     else:
         conf.write(gcal=None)
 
-    print "Found {0} {1} sessions over {2} days.".format(len(conf.schedule), conf.conf.upper(), conf.day_counter)
+    print("Found {0} {1} sessions over {2} days.".format(len(conf.schedule), conf.conf.upper(), conf.day_counter))
     
-    print "Writing {0} schedule to {1}".format(conf.conf.upper(), conf.output_file)
+    print("Writing {0} schedule to {1}".format(conf.conf.upper(), conf.output_file))
 
-    print "Have fun!"
+    print("Have fun!")
 
 if __name__ == '__main__':
     main()
